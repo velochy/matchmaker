@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tournament App</title>
+  <script src="https://cdn.jsdelivr.net/npm/vue@2/dist/vue.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vuex@3.6.2/dist/vuex.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/munkres-js@1.2.2/munkres.js"></script>
+  
+  <style>
+    .player-list, .rounds {
+      margin-bottom: 20px;
+    }
+    .player {
+      margin-bottom: 5px;
+    }
+    .rounds {
+      display: flex;
+      flex-direction: row;
+    }
+    .round {
+      margin-bottom: 10px;
+    }
+    .round-header, .round-content {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      border: 1px solid #ddd;
+      padding: 10px;
+      background-color: #f9f9f9;
+    }
+    .round-content {
+      background-color: #fff;
+      height: 4em;
+    }
+    .round-content > div {
+      flex: 1 1 33%;
+      padding: 5px;
+    }
+    .round-content > div > input,
+    .round-content > div > select {
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script>
+
+    // Helper function for minimum non-zero value (or 1 if all zeros or empty list)
+    var mnz = function(ar) {
+        ss = ar.toSorted();
+        mnzv = ss[ss.length-1];
+        ss.forEach( (v,i) => { if (i>0) { diff = v-ss[i-1]; if (diff>0 && diff<mnzv) mnzv=diff;} })
+        if (mnzv == 0) mnzv = 1.0;
+        return mnzv;
+    };
+
+    // Define the Rounds component
+    const Rounds = {
+      template: `
+        <div>
+        <h2>Rounds</h2>
+        <div class="rounds">
+          <div class="round">
+            <div class="round-header">Player</div>
+            <div class="round-content" v-for="player in players" :key="player.name">
+                {{ player.name }} <br>
+                 Score: {{ player.score }} ({{ player.tiebreakers }})
+                <div>
+                    <label>Initial:</label>
+                    <input v-model.number="player.initial" type="number"/>
+              </div>
+            </div>
+
+          </div>
+          <div v-for="(round, roundIndex) in rounds" :key="roundIndex" class="round">
+            <div class="round-header">
+              Round {{ roundIndex + 1 }}
+            </div>
+            <div class="round-content" v-for="player in players" :key="player.name">
+              <div>
+                <label>Opponent:</label>
+                <select v-model="round[player.name].opponent">
+                  <option v-for="opponent in players" :key="opponent.name" :value="opponent.name">{{ opponent.name }}</option>
+                </select>
+              </div>
+              <div>
+                <label>Score:</label>
+                <input v-model.number="round[player.name].score" type="number" @change="updateScore(roundIndex, player.name)" />
+              </div>
+              <div>
+                <label>Tiebreaker:</label>
+                <input v-model.number="round[player.name].tiebreaker" type="number" @change="updateScore(roundIndex, player.name)" />
+              </div>
+            </div>
+          </div>
+          <button @click="addRound">Add Round</button>
+        </div>
+        <input v-model="newPlayer" placeholder="Add a player" />
+        <button @click="addPlayer">Add Player</button>
+        </div>
+      `,
+      data() {
+        return {
+          newPlayer: '',
+        };
+      },
+      computed: {
+        players() {
+          return this.$store.getters.getPlayers;
+        },
+        rounds() {
+          return this.$store.getters.getRounds;
+        },
+      },
+      methods: {
+        addPlayer() {
+          if (this.newPlayer.trim()) {
+            this.$store.dispatch('addPlayer', this.newPlayer);
+            this.newPlayer = '';
+          }
+        },
+        addRound() {
+            const newRound = {};
+            this.players.forEach(player => {
+                newRound[player.name] = { opponent: '', score: 0, tiebreaker: 0 };
+            });
+
+            names = this.players.map(player => player.name);
+            rounds = this.rounds;
+
+            // Collect scores and tiebreakers
+            scores = names.map(p=>0); 
+            tiebreakers = names.map(p=>0);
+            rounds.forEach( round => {
+                names.forEach( (n,i) => { scores[i] += round[n]['score']; tiebreakers[i] += round[n]['tiebreaker']; })
+            })
+            initials = this.players.map(p => p.initial);    
+
+            max_s = Math.max(...scores)
+
+            // Figure out the factor for tiebreakers and initials
+            tb_scale = mnz(scores)/(1+Math.max(...tiebreakers));
+            i_scale = mnz(tiebreakers)/(1+Math.max(...initials));
+
+            // Calculate the adjusted score i.e. score with tiebreakers factored in
+            adj_scores = scores.map( (s,i) => s + tb_scale*(tiebreakers[i] + i_scale*initials[i]));
+
+            // Set up the initial distance matrix
+            inf = 2*(max_s+1)*(max_s+1); // Functional infinity
+            dists = adj_scores.map( (v1,i1) => adj_scores.map( 
+                (v2,i2) => (i1!=i2)?(v1-v2)*(v1-v2):inf ));
+
+            // Remove already paired up people from consideration
+            rounds.forEach( round => {
+                names.forEach( (n,i) => { op = round[n]['opponent']; if (op) { 
+                    oi = names.indexOf(op); 
+                    dists[oi][i] = dists[i][oi] = inf; 
+                }})
+            })
+
+            // Do the matching using Hungarian (Munkres) algorithm
+            m = new Munkres();
+            match = m.compute(dists);
+            
+            // Apply the matching to the round
+            match.forEach( (t,i) => {
+                newRound[names[t[0]]]['opponent'] = names[t[1]];
+            });
+
+          this.$store.dispatch('addRound', newRound);
+        },
+        updateScore(roundIndex, playerName) {
+          this.$store.dispatch('updateScore', { roundIndex, playerName });
+        }
+      },
+    };
+
+    //const store = new Vuex.Store({
+    const store = new Vuex.Store({
+      state: {
+        players: [
+          { name: 'Player 1', score: 0, tiebreakers: 0, initial: 0 },
+          { name: 'Player 2', score: 0, tiebreakers: 0, initial: 0 },
+          { name: 'Player 3', score: 0, tiebreakers: 0, initial: 0 },
+          { name: 'Player 4', score: 0, tiebreakers: 0, initial: 0 },
+        ],
+        rounds: [],
+      },
+      mutations: {
+        ADD_PLAYER(state, playerName) {
+          state.players.push({ name: playerName, score: 0 });
+        },
+        ADD_ROUND(state, round) {
+          state.rounds.push(round);
+        },
+        UPDATE_SCORE(state, { roundIndex, playerName }) {
+          const round = state.rounds[roundIndex];
+          const player = state.players.find(p => p.name === playerName);
+          if (player) {
+            player.score = state.rounds.reduce((total, r) => {
+              return total + (r[playerName].score);
+            }, 0);
+            player.tiebreakers = state.rounds.reduce((total, r) => {
+              return total + (r[playerName].tiebreaker);
+            }, 0);
+          }
+        },
+      },
+      actions: {
+        addPlayer({ commit }, playerName) {
+          commit('ADD_PLAYER', playerName);
+        },
+        addRound({ commit }, round) {
+          commit('ADD_ROUND', round);
+        },
+        updateScore({ commit }, payload) {
+          commit('UPDATE_SCORE', payload);
+        },
+      },
+      getters: {
+        getPlayers: state => state.players,
+        getRounds: state => state.rounds,
+      },
+    });
+
+    // Create the Vue instance
+    new Vue({
+      el: '#app',
+      store,
+      template: `
+        <div id="app">
+          <Rounds />
+        </div>
+      `,
+      components: {
+        Rounds,
+      },
+    });
+  </script>
+</body>
+</html>
