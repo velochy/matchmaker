@@ -63,7 +63,10 @@
     const Rounds = {
       template: `
         <div>
-        <h2>Rounds</h2>
+        <input type="checkbox" id="tb-checkbox" v-model="show_tiebreakers" /><label for="tb-checkbox">Tiebreakers</label><br>
+        Sort by:
+          <input type="radio" id="s-score" value="score" v-model="sort" @change="sortPlayers(sort)"/><label for="s-score">Score</label>
+          <input type="radio" id="s-table" value="table" v-model="sort" @change="sortPlayers(sort)"/><label for="s-table">Table</label>
         <div class="rounds">
           <div class="round">
             <div class="round-header">Player</div>
@@ -94,7 +97,7 @@
                 <label>Score:</label>
                 <input v-model.number="round[player.name].score" type="number" @change="updateScore(roundIndex, player.name)" />
               </div>
-              <div>
+              <div v-if="show_tiebreakers">
                 <label>Tiebreaker:</label>
                 <input v-model.number="round[player.name].tiebreaker" type="number" @change="updateScore(roundIndex, player.name)" />
               </div>
@@ -109,6 +112,8 @@
       data() {
         return {
           newPlayer: '',
+          show_tiebreakers: false,
+          sort: 'score'
         };
       },
       computed: {
@@ -135,28 +140,10 @@
             names = this.players.map(player => player.name);
             rounds = this.rounds;
 
-            // Collect scores and tiebreakers
-            scores = names.map(p=>0); 
-            tiebreakers = names.map(p=>0);
-            rounds.forEach( round => {
-                names.forEach( (n,i) => { scores[i] += round[n]['score']; tiebreakers[i] += round[n]['tiebreaker']; })
-            })
-
-            // Initial tiebrakers (with a tiny amount of random added to make sure no proper ties exist)
-            initials = this.players.map(p => p.initial + 0.01*Math.random());
-
-            max_s = Math.max(...scores)
-
-            // Figure out the factor for tiebreakers and initials
-            tb_scale = mnz(scores)/(1+Math.max(...tiebreakers));
-            i_scale = mnz(tiebreakers)/(1+Math.max(...initials));
-
-            // Calculate the adjusted score i.e. score with tiebreakers factored in
-            // Without tiebreaks the matching algorithm can give cycles a->b->c->a
-            adj_scores = scores.map( (s,i) => s + tb_scale*(tiebreakers[i] + i_scale*initials[i]));
-
+            adj_scores = this.players.map( p => p.adj_score);
+            
             // Set up the initial distance matrix
-            inf = 2*(max_s+1)*(max_s+1); // Functional infinity
+            inf = 1e120; // Functionally infinity
             dists = adj_scores.map( (v1,i1) => adj_scores.map( 
                 (v2,i2) => (i1!=i2)?(v1-v2)*(v1-v2):inf ));
 
@@ -165,7 +152,8 @@
                 names.forEach( (n,i) => {
                     op = round[n]['opponent'];
                     oi = names.indexOf(op); 
-                    dists[oi][i] = dists[i][oi] = inf; 
+                    dists[oi][i] += inf/10 // Still prefer it over matching with itself
+                    dists[i][oi] += inf/10
                 })
             })
 
@@ -205,10 +193,14 @@
             });
 
           this.$store.dispatch('addRound', newRound);
+
+          // Switch to table orderding so tables can be read off by TO easily
+          this.sort = 'table'
           this.$store.dispatch('sortPlayers','table');
         },
         updateScore(roundIndex, playerName) {
           this.$store.dispatch('updateScore', { roundIndex, playerName });
+          if (this.sort=='score') this.$store.dispatch('sortPlayers',this.sort);
         },
         sortPlayers(by) {
           this.$store.dispatch('sortPlayers',by);
@@ -220,10 +212,10 @@
     const store = new Vuex.Store({
       state: {
         players: [
-          { name: 'Player 1', score: 0, tiebreakers: 0, initial: 0 },
-          { name: 'Player 2', score: 0, tiebreakers: 0, initial: 0 },
-          { name: 'Player 3', score: 0, tiebreakers: 0, initial: 0 },
-          { name: 'Player 4', score: 0, tiebreakers: 0, initial: 0 },
+          { name: 'Player 1', score: 0, tiebreakers: 0, adj_score:0, initial: 0 },
+          { name: 'Player 2', score: 0, tiebreakers: 0, adj_score:0, initial: 0 },
+          { name: 'Player 3', score: 0, tiebreakers: 0, adj_score:0, initial: 0 },
+          { name: 'Player 4', score: 0, tiebreakers: 0, adj_score:0, initial: 0 },
         ],
         rounds: [],
       },
@@ -244,15 +236,36 @@
             player.tiebreakers = state.rounds.reduce((total, r) => {
               return total + (r[playerName].tiebreaker);
             }, 0);
+
+            // Calculate adjusted scores i.e score with tiebrakers scaled down to irrelevance
+
+            // Collect scores and tiebreakers
+            scores = state.players.map(p => state.rounds.reduce( (s,r) => s+r[p.name].score, 0));
+            tiebreakers = state.players.map(p => state.rounds.reduce( (s,r) => s+r[p.name].tiebreaker, 0));  
+            
+            // Initial tiebreakers, breaking ties on them with ranking
+            // This is important to avoid never having a single proper tie, because
+            // with ties, the matching algorithm can give cycles a->b->c->a
+            initials = state.players.map( (p,i) => p.initial + 0.001*i);
+
+            // Figure out the factor for tiebreakers and initials
+            tb_scale = mnz(scores)/(1+Math.max(...tiebreakers));
+            i_scale = mnz(tiebreakers)/(1+Math.max(...initials));
+
+            // Recompute the adjusted scores i.e. score with tiebreakers factored in
+            state.players.forEach(p => { p.adj_score = p.score + tb_scale*(p.tiebreakers + i_scale*p.initial); });
+            console.log(player.adj_score);
           }
         },
         SORT_PLAYERS(state, by) {
           if (by=='table') {
             if (state.rounds.length>0) {
               lr = state.rounds[state.rounds.length-1];
-              state.players.sort( (a,b) => (lr[a.name][by] - lr[b.name][by]));
+              state.players.sort( (a,b) => (lr[a.name].table - lr[b.name].table));
             }
-          } else state.players.sort( (a,b) => a[by]-b[by]);
+          } else if (by=='score') {
+            state.players.sort( (a,b) => b.adj_score-a.adj_score);
+          }
         }
       },
       actions: {
@@ -281,6 +294,7 @@
       store,
       template: `
         <div id="app">
+          <h2>Tournament matcher</h2>
           <Rounds />
         </div>
       `,
