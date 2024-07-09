@@ -83,10 +83,12 @@
             </div>
             <div class="round-content" v-for="player in players" :key="player.name">
               <div>
-                <label>Opponent:</label>
-                <select v-model="round[player.name].opponent">
-                  <option v-for="opponent in players" :key="opponent.name" :value="opponent.name">{{ opponent.name }}</option>
-                </select>
+                <label>Opponent:</label><br>
+                {{ round[player.name].opponent }}
+              </div>
+              <div>
+                <label>Table:</label><br>
+                {{ round[player.name].table+1 }}
               </div>
               <div>
                 <label>Score:</label>
@@ -139,7 +141,9 @@
             rounds.forEach( round => {
                 names.forEach( (n,i) => { scores[i] += round[n]['score']; tiebreakers[i] += round[n]['tiebreaker']; })
             })
-            initials = this.players.map(p => p.initial);    
+
+            // Initial tiebrakers (with a tiny amount of random added to make sure no proper ties exist)
+            initials = this.players.map(p => p.initial + 0.01*Math.random());
 
             max_s = Math.max(...scores)
 
@@ -148,6 +152,7 @@
             i_scale = mnz(tiebreakers)/(1+Math.max(...initials));
 
             // Calculate the adjusted score i.e. score with tiebreakers factored in
+            // Without tiebreaks the matching algorithm can give cycles a->b->c->a
             adj_scores = scores.map( (s,i) => s + tb_scale*(tiebreakers[i] + i_scale*initials[i]));
 
             // Set up the initial distance matrix
@@ -157,25 +162,56 @@
 
             // Remove already paired up people from consideration
             rounds.forEach( round => {
-                names.forEach( (n,i) => { op = round[n]['opponent']; if (op) { 
+                names.forEach( (n,i) => {
+                    op = round[n]['opponent'];
                     oi = names.indexOf(op); 
                     dists[oi][i] = dists[i][oi] = inf; 
-                }})
+                })
             })
 
             // Do the matching using Hungarian (Munkres) algorithm
-            m = new Munkres();
-            match = m.compute(dists);
+            matcher = new Munkres();
+            match = matcher.compute(dists);
+
+            // Thin the match so that it contains every pair just once
+            paired = {};
+            match = match.filter( t => { if (!paired[t[0]]) { paired[t[1]] = true; return true; } else return false; });
             
+            // Initial distance matrix for tables (all zeros)
+            n_tables = Math.trunc(names.length/2);
+            tdists = [];
+            for (let i = 0; i < match.length; i++)
+              tdists.push(new Array(n_tables).fill(0));
+
+            // Avoid players playing the same table they have before, if possible
+            rounds.forEach( round => {
+                match.forEach( (mt,mi) => { 
+                    oi = names.indexOf(op); 
+                    tdists[mi][round[names[mt[0]]].table] += 1;
+                    tdists[mi][round[names[mt[1]]].table] += 1;
+                });
+            });
+
+            // Match the tables
+            tmatch = matcher.compute(tdists);
+            tdict = {}
+            tmatch.forEach( t => { tdict[t[0]] = t[1]; });
+
             // Apply the matching to the round
             match.forEach( (t,i) => {
                 newRound[names[t[0]]]['opponent'] = names[t[1]];
+                newRound[names[t[1]]]['opponent'] = names[t[0]];
+                newRound[names[t[0]]]['table'] = newRound[names[t[1]]]['table'] = tdict[i];
             });
 
           this.$store.dispatch('addRound', newRound);
+          this.$store.dispatch('sortPlayers','table');
         },
         updateScore(roundIndex, playerName) {
           this.$store.dispatch('updateScore', { roundIndex, playerName });
+        },
+        sortPlayers(by) {
+          this.$store.dispatch('sortPlayers',by);
         }
       },
     };
@@ -193,7 +229,7 @@
       },
       mutations: {
         ADD_PLAYER(state, playerName) {
-          state.players.push({ name: playerName, score: 0 });
+          state.players.push({ name: playerName, score: 0, tiebreakers: 0, initial: 0 });
         },
         ADD_ROUND(state, round) {
           state.rounds.push(round);
@@ -210,6 +246,14 @@
             }, 0);
           }
         },
+        SORT_PLAYERS(state, by) {
+          if (by=='table') {
+            if (state.rounds.length>0) {
+              lr = state.rounds[state.rounds.length-1];
+              state.players.sort( (a,b) => (lr[a.name][by] - lr[b.name][by]));
+            }
+          } else state.players.sort( (a,b) => a[by]-b[by]);
+        }
       },
       actions: {
         addPlayer({ commit }, playerName) {
@@ -221,6 +265,9 @@
         updateScore({ commit }, payload) {
           commit('UPDATE_SCORE', payload);
         },
+        sortPlayers({ commit }, by) {
+          commit('SORT_PLAYERS', by);
+        }
       },
       getters: {
         getPlayers: state => state.players,
