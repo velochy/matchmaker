@@ -7,7 +7,8 @@
   <script src="https://cdn.jsdelivr.net/npm/vue@2/dist/vue.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/vuex@3.6.2/dist/vuex.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/munkres-js@1.2.2/munkres.js"></script>
-  
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
   <style>
     .player-list, .rounds {
       margin-bottom: 20px;
@@ -107,13 +108,17 @@
         </div>
         <input v-model="newPlayer" placeholder="Add a player" />
         <button @click="addPlayer">Add Player</button>
+        <input type="file" id="fileUpload" @change="uploadFile" accept=".csv" hidden>
+        <button><label for="fileUpload">Upload Players</label></button>
+        <button @click="downloadFile">Download Results</button>
         </div>
       `,
       data() {
         return {
           newPlayer: '',
           show_tiebreakers: false,
-          sort: 'score'
+          sort: 'score',
+          parsedData: []
         };
       },
       computed: {
@@ -204,6 +209,39 @@
         },
         sortPlayers(by) {
           this.$store.dispatch('sortPlayers',by);
+        },
+        removePlayers() {
+          this.$store.dispatch('removePlayers');
+        },
+        uploadFile(event) {
+          const file = event.target.files[0];
+          if (file) {
+            Papa.parse(file, {
+              header: true,
+              complete: this.handleParseComplete,
+              error: this.handleParseError,
+            });
+          }
+        },
+        handleParseComplete(results) {
+          this.removePlayers();
+          this.parsedData = results.data;
+          // TODO täpne formatting jne
+          this.parsedData.forEach( player => this.$store.dispatch('addPlayer', player.name));
+        },
+        handleParseError(error) {
+          console.error(error);
+        },
+        downloadFile() {
+          const csv = Papa.unparse(this.players);
+          const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.setAttribute('download', 'mm_data.csv');
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
         }
       },
     };
@@ -221,7 +259,10 @@
       },
       mutations: {
         ADD_PLAYER(state, playerName) {
-          state.players.push({ name: playerName, score: 0, tiebreakers: 0, initial: 0 });
+          state.players.push({ name: playerName, score: 0, tiebreakers: 0, adj_score:0, initial: 0 });
+        },
+        REMOVE_PLAYERS(state) {
+          state.players.length = 0;
         },
         ADD_ROUND(state, round) {
           state.rounds.push(round);
@@ -271,6 +312,9 @@
       actions: {
         addPlayer({ commit }, playerName) {
           commit('ADD_PLAYER', playerName);
+        },
+        removePlayers({ commit }) {
+          commit('REMOVE_PLAYERS');
         },
         addRound({ commit }, round) {
           commit('ADD_ROUND', round);
