@@ -224,15 +224,59 @@
           }
         },
         handleParseComplete(results) {
+          console.log(results)
+
+          let data = results.data;
+          data = data.filter(d => d.name); // Keep all rows that have a name
+
+          // Re-create players
           this.removePlayers();
-          this.parsedData = results.data;
-          // TODO täpne formatting jne
-          this.parsedData.forEach( player => this.$store.dispatch('addPlayer', player.name));
+          data.forEach( player => this.$store.dispatch('addPlayer', player.name));
+
+          // Find number of rounds in data and create rounds
+          n_r = 0;
+          Object.keys(data[0]).forEach(k => {
+            let m = /r(\d)_opp/.exec(k);
+            if (m!=null) n_r = Math.max(n_r,parseInt(m[1]));
+          });
+          for(var i=0;i<n_r;i++) this.$store.dispatch('addRound',{});
+
+          // Update data
+          players = this.players;
+          data.forEach( (pd,pi) => {
+            player = players[pi];
+            player.initial = pd.initial;
+            this.rounds.forEach((r,ri) => {
+              rind = ri+1;
+              r[pd.name] = {
+                'opponent': pd['r'+rind+'_opp'],
+                'table': parseInt(pd['r'+rind+'_table'])-1,
+                'score': parseFloat(pd['r'+rind+'_score']) || 0,
+                'tiebreaker': parseFloat(pd['r'+rind+'_tb']) || 0
+              }              
+            });
+          });
+
+          // Run table updates
+          players.forEach( p=> {
+            this.rounds.forEach( (r,ri) => this.$store.dispatch('updateScore',{'roundIndex':ri,'playerName':p.name}) );
+          });
+
         },
         handleParseError(error) {
           console.error(error);
         },
         downloadFile() {
+          let tdata = {...this.players};
+          this.rounds.forEach( (r, ri) => {
+            this.players.forEach( (p, pi) => {
+              rind = ri+1;
+              tdata[pi]['r'+rind+'_opp'] = r[p.name].opponent;
+              tdata[pi]['r'+rind+'_table'] = r[p.name].table+1;
+              tdata[pi]['r'+rind+'_score'] = r[p.name].score;
+              tdata[pi]['r'+rind+'_tb'] = r[p.name].tiebreaker;
+            });
+          });
           const csv = Papa.unparse(this.players);
           const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
           const url = URL.createObjectURL(blob);
@@ -270,6 +314,7 @@
         UPDATE_SCORE(state, { roundIndex, playerName }) {
           const round = state.rounds[roundIndex];
           const player = state.players.find(p => p.name === playerName);
+          console.log(roundIndex,playerName,player);
           if (player) {
             player.score = state.rounds.reduce((total, r) => {
               return total + (r[playerName].score);
